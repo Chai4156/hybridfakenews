@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+venv/
+ENV/
+.venv
+env/
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# Logs & outputs
+*.log
+prediction.log
+confusion_matrix_*.png
+model_comparison.png
+hybrid.png
+*.csv
+results/
+
+# Large files & archives
+*.zip
+*.gz
+*.tar
+WELFake_Dataset.csv
+roberta_fine_tuned/
+roberta_fine_tuned.zip
+hybridfakenews/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Model weights (use Git LFS or store separately)
+*.safetensors
+*.bin
+*.pt
