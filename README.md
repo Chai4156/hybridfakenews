@@ -47,9 +47,9 @@ Input Text
 | Component     | Standalone | Role in Ensemble |
 |---------------|------------|-----------------|
 | RoBERTa only  | 92.1%      | 80% weight      |
-| SBERT-NB only | 88.5%      | 20% weight      |
+| SBERT-NB only | 88.5%      | 20% weight      | 
 | **Ensemble**  | —          | **92.45%** ✓    |
-
+Taken F1-Score as primary metric because its takes care of both false negatives and false positives since both are harmful for the detection.
 ---
 
 ## Dataset
@@ -104,18 +104,6 @@ fake-news-detector/
 
 ## Environment Setup
 
-```bash
-cp .env.example .env
-```
-
-Edit `.env`:
-- `FLASK_SECRET_KEY` — random secret for production
-- `CORS_ALLOWED_ORIGINS` — frontend URL (default: `http://localhost:5173`)
-- `VITE_API_URL` — API endpoint (default: `http://localhost:5000`)
-
-> ⚠️ Never commit `.env` — it's in `.gitignore`
-
----
 
 ## Setup — Backend
 
