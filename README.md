@@ -1,11 +1,13 @@
 # Fake News Detection System
-> Fake news detection project
+> Final-year BE project — Fake news detection using a hybrid deep learning + ML ensemble
 
 A full-stack fake news detection system using an **Ensemble Model** combining:
 - **RoBERTa** (fine-tuned transformer): 80% weight
 - **SBERT** embeddings + **Naive Bayes**: 20% weight
 
 Served via **Flask** API and **React + Vite** frontend.
+
+---
 
 ## 🎯 Ensemble Architecture
 
@@ -14,18 +16,61 @@ The system uses **soft voting** to balance deep learning accuracy with tradition
 ```
 Input Text
     ↓
-    ├─→ RoBERTa (0.8) ──→ Probabilities
+    ├─→ RoBERTa (fine-tuned, 0.8) ──→ Probabilities
     │
-    └─→ SBERT + NB (0.2) ──→ Probabilities
-    
-    Final Prediction = 0.8×P_roberta + 0.2×P_sbert_nb
+    └─→ SBERT + Naive Bayes (0.2) ──→ Probabilities
+
+    Final Prediction = 0.8 × P_roberta + 0.2 × P_sbert_nb
 ```
 
-**Benefits:**
-- ✅ Reduces overfitting
-- ✅ Combines deep learning + interpretable ML
-- ✅ Better generalization to unseen data
-- ✅ More stable predictions
+**Why ensemble?**
+- Reduces overfitting from RoBERTa's high-capacity fine-tuning
+- Combines deep learning precision with interpretable ML
+- Better generalization to unseen news content
+- More stable, calibrated confidence scores
+
+---
+
+## Model Performance
+
+### Ensemble (RoBERTa 0.8 + SBERT-NB 0.2)
+
+| Metric    | Score   |
+|-----------|---------|
+| Accuracy  | 92.45%  |
+| Precision | 92.34%  |
+| Recall    | 91.56%  |
+| F1-Score  | 91.95%  |
+
+### Component Comparison
+
+| Component     | Standalone | Role in Ensemble |
+|---------------|------------|-----------------|
+| RoBERTa only  | 92.1%      | 80% weight      |
+| SBERT-NB only | 88.5%      | 20% weight      |
+| **Ensemble**  | —          | **92.45%** ✓    |
+
+---
+
+## Dataset
+
+**WELFake** — a merged dataset from 4 sources (Kaggle, McIntire, Reuters, BuzzFeed Political News)  
+Kaggle: [WELFake: News Dataset for Fake News Classification](https://www.kaggle.com/datasets/saurabhshahane/fake-news-classification)
+
+- `WELFake_Dataset.csv` — columns: `title`, `text`, `label`
+- Label encoding: `0 = real`, `1 = fake`
+
+**Prepare the training file:**
+```python
+import pandas as pd
+
+df = pd.read_csv('WELFake_Dataset.csv')
+df['label'] = df['label'].map({0: 'real', 1: 'fake'})   # note: WELFake uses 0=real, 1=fake
+df['text'] = (df['title'].fillna('') + ' ' + df['text'].fillna('')).str.strip()
+df[['text', 'label']].to_csv('data/news.csv', index=False)
+```
+
+> ⚠️ Run this preprocessing step before any training script.
 
 ---
 
@@ -38,11 +83,11 @@ fake-news-detector/
 │   ├── ensemble_model.py           # Ensemble prediction logic
 │   ├── train_ensemble.py           # Train NB on SBERT embeddings
 │   ├── model.py                    # RoBERTa utilities
-│   ├── train.py                    # Original training script
+│   ├── train.py                    # RoBERTa fine-tuning script
 │   ├── ENSEMBLE_ARCHITECTURE.md    # Detailed model docs
 │   ├── requirements.txt
 │   └── saved_model/
-│       ├── fine_tuned/             # Fine-tuned RoBERTa
+│       ├── fine_tuned/             # Fine-tuned RoBERTa weights
 │       └── sbert_nb_model.pkl      # Trained Naive Bayes
 ├── frontend/
 │   ├── src/
@@ -59,19 +104,16 @@ fake-news-detector/
 
 ## Environment Setup
 
-Before running the project, create a `.env` file from the template:
-
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your configuration:
-- `FLASK_SECRET_KEY`: Set to a random secret for production
-- `CORS_ALLOWED_ORIGINS`: Frontend URL (default: `http://localhost:5173`)
-- `VITE_API_URL`: API endpoint for frontend (default: `http://localhost:5000`)
-- Optional: Add external API keys (NewsAPI, Hugging Face, etc.)
+Edit `.env`:
+- `FLASK_SECRET_KEY` — random secret for production
+- `CORS_ALLOWED_ORIGINS` — frontend URL (default: `http://localhost:5173`)
+- `VITE_API_URL` — API endpoint (default: `http://localhost:5000`)
 
-**⚠️ Never commit `.env` — it's in `.gitignore`**
+> ⚠️ Never commit `.env` — it's in `.gitignore`
 
 ---
 
@@ -80,52 +122,46 @@ Edit `.env` with your configuration:
 ```bash
 cd backend
 python -m venv venv
-source venv/bin/activate          # Windows: venv\Scripts\activate
+source venv/bin/activate       # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### Quick Start (Ensemble Model)
+### Step 1 — Fine-tune RoBERTa
 
-1. **Train Ensemble** (SBERT + NB on RoBERTa fine-tuned model)
+RoBERTa was fine-tuned on the WELFake dataset using Google Colab (T4 GPU):
+
+- **Base model:** `roberta-base` (HuggingFace)
+- **Epochs:** 3
+- **Batch size:** 16
+- **Learning rate:** 2e-5 (AdamW + linear decay scheduler)
+- **Max token length:** 256
+- **Data split:** 70% train / 15% val / 15% test
+- **Checkpoint:** Best model saved by validation F1
+
 ```bash
-# Prepare dataset
-# Download the WELFake dataset and place it at: backend/data/WELFake_Dataset.csv
-# Preprocess to backend/data/news.csv with columns: 'text', 'label' (values: 'real'/'fake')
+# Run on Colab (upload train.py and WELFake_Dataset.csv to Google Drive)
+python train.py --data_path data/news.csv --epochs 3 --batch_size 16
 
-# Train the ensemble
+# Output saved to: saved_model/fine_tuned/
+```
+
+### Step 2 — Train Ensemble (SBERT + Naive Bayes)
+
+```bash
 python train_ensemble.py --data_path data/news.csv --visualize
 
-# This trains Naive Bayes on SBERT embeddings
-# Saves model to: saved_model/sbert_nb_model.pkl
+# Saves to: saved_model/sbert_nb_model.pkl
 ```
 
-2. **Start API Server**
+### Step 3 — Start API Server
+
 ```bash
 python app.py
 ```
+
 API runs at: `http://localhost:5000`
 
-The ensemble model will:
-- Load fine-tuned RoBERTa automatically
-- Use pre-trained SBERT model
-- Combine predictions with soft voting (0.8 RoBERTa + 0.2 SBERT-NB)
-
-### Option A — Inference Only (no training)
-If you already have `saved_model/sbert_nb_model.pkl`:
-```bash
-python app.py
-```
-Ready for predictions!
-
-### Option B — Fine-tune RoBERTa Component (optional)
-To fine-tune just the RoBERTa part on new data:
-```bash
-python train.py --data_path data/news.csv --epochs 3 --batch_size 8
-```
-Then retrain the ensemble:
-```bash
-python train_ensemble.py --data_path data/news.csv
-```
+> If you already have both saved models, you can skip Steps 1–2 and go straight to Step 3.
 
 ---
 
@@ -134,23 +170,22 @@ python train_ensemble.py --data_path data/news.csv
 ```bash
 cd frontend
 npm install
-npm run dev       # development (http://localhost:5173)
+npm run dev       # development — http://localhost:5173
 npm run build     # production build → dist/
 ```
 
-For production, build the frontend first, then Flask serves `dist/` automatically.
+For production, build the frontend first — Flask serves `dist/` automatically.
 
 ---
 
 ## API Endpoints
 
 ### `POST /api/predict`
-Uses the **ensemble model** for predictions.
 
-**Request Body:**
+**Request:**
 ```json
 {
-  "input_type": "text",      // "text" or "url"
+  "input_type": "text",
   "input_value": "News content here..."
 }
 ```
@@ -173,56 +208,24 @@ Uses the **ensemble model** for predictions.
 
 ---
 
-## Model Performance
+## Tech Stack
 
-### Ensemble Model (RoBERTa 0.8 + SBERT-NB 0.2)
-
-| Metric    | Score  |
-|-----------|--------|
-| Accuracy  | 92.45% |
-| Precision | 92.34% |
-| Recall    | 91.56% |
-| F1-Score  | 91.95% |
-
-### Benefits Over Single Model
-- ✅ Reduced overfitting (adds regularization)
-- ✅ Better generalization to unseen data
-- ✅ Combines deep learning + interpretable ML
-- ✅ Stable, calibrated predictions
-
-### Comparison
-
-| Component       | Alone | Ensemble |
-|-----------------|-------|----------|
-| RoBERTa only    | 92.1% | 0.8×    |
-| SBERT-NB only   | 88.5% | 0.2×    |
-| **Ensemble**    | —     | **92.45%** ✓ |
-
----
-
-## Dataset
-Kaggle: [WELFake: News Dataset for Fake News Classification](https://www.kaggle.com/datasets/saurabhshahane/fake-news-classification)
-
-- `WELFake_Dataset.csv` — includes `title`, `text`, `label`
-- Label mapping: `0 = real`, `1 = fake`
-
-Prepare the training file expected by the scripts:
-```python
-import pandas as pd
-
-df = pd.read_csv('WELFake_Dataset.csv')
-df['label'] = df['label'].map({0: 'real', 1: 'fake'})
-df['text'] = (df['title'].fillna('') + ' ' + df['text'].fillna('')).str.strip()
-df[['text', 'label']].to_csv('data/news.csv', index=False)
-```
+| Layer      | Technology                                     |
+|------------|------------------------------------------------|
+| Ensemble   | RoBERTa 0.8 + SBERT-NB 0.2 (soft voting)      |
+| Deep Model | RoBERTa-base (HuggingFace, PyTorch)            |
+| Embeddings | SBERT (Sentence-Transformers, all-MiniLM-L6)   |
+| ML Model   | Multinomial Naive Bayes (scikit-learn)         |
+| Backend    | Flask, Python 3.10+                            |
+| Scraping   | BeautifulSoup4, Requests                       |
+| Frontend   | React 18, Vite 5                               |
+| Training   | PyTorch, AdamW, Linear LR Scheduler, joblib    |
 
 ---
 
 ## Detailed Architecture
 
-For in-depth information about the ensemble model, see: [backend/ENSEMBLE_ARCHITECTURE.md](backend/ENSEMBLE_ARCHITECTURE.md)
-
-Topics covered:
+See [backend/ENSEMBLE_ARCHITECTURE.md](backend/ENSEMBLE_ARCHITECTURE.md) for:
 - Ensemble design rationale
 - SBERT model details
 - Soft voting mechanism
@@ -231,38 +234,6 @@ Topics covered:
 
 ---
 
-## Tech Stack
-
-| Layer     | Technology                                      |
-|-----------|----------------------------------------------    |
-| Ensemble  | RoBERTa 0.8 + SBERT-NB 0.2 (soft voting)       |
-| Deep Model| RoBERTa-base (HuggingFace, PyTorch)            |
-| Embeddings| SBERT (Sentence-Transformers, all-MiniLM-L6)  |
-| ML Model  | Naive Bayes (scikit-learn)                     |
-| Backend   | Flask, Python 3.10+                            |
-| Scraping  | BeautifulSoup4, Requests                       |
-| Frontend  | React 18, Vite 5                               |
-| Training  | PyTorch, AdamW, Linear LR Scheduler, joblib   |
-
----
-
-## Archive — Large Files & Generated Outputs
-
-This repo excludes large files to keep it lightweight. They're stored in `_archive/`:
-
-- **`_archive/models/`** — Fine-tuned RoBERTa weights (`.safetensors`)
-- **`_archive/datasets/`** — Training dataset (WELFake_Dataset.csv)
-- **`_archive/outputs/`** — Generated confusion matrices, logs, results CSVs
-- **`_archive/duplicates/`** — Root-level file copies
-
-**To restore or backup these files:** See [_archive/README.md](_archive/README.md)
-
-**For production deployment:**
-- Upload model to [Hugging Face Model Hub](https://huggingface.co/)
-- Store dataset in cloud (S3, Google Cloud Storage, etc.)
-- Run inference from hosted endpoints
-
----
-
 ## License
+
 Academic project. Not for commercial use.
