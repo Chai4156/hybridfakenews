@@ -89,8 +89,8 @@ pip install -r requirements.txt
 1. **Train Ensemble** (SBERT + NB on RoBERTa fine-tuned model)
 ```bash
 # Prepare dataset
-# Download from Kaggle and place at: backend/data/news.csv
-# Columns needed: 'text', 'label' (values: 'real'/'fake')
+# Download the WELFake dataset and place it at: backend/data/WELFake_Dataset.csv
+# Preprocess to backend/data/news.csv with columns: 'text', 'label' (values: 'real'/'fake')
 
 # Train the ensemble
 python train_ensemble.py --data_path data/news.csv --visualize
@@ -201,17 +201,18 @@ Uses the **ensemble model** for predictions.
 ---
 
 ## Dataset
-Kaggle: [Fake and Real News Dataset](https://www.kaggle.com/datasets/clmentbisaillon/fake-and-real-news-dataset)
+Kaggle: [WELFake: News Dataset for Fake News Classification](https://www.kaggle.com/datasets/saurabhshahane/fake-news-classification)
 
-- `Fake.csv` — ~23,500 fake news articles
-- `True.csv` — ~21,400 real news articles
+- `WELFake_Dataset.csv` — includes `title`, `text`, `label`
+- Label mapping: `0 = real`, `1 = fake`
 
-Merge and label before training:
+Prepare the training file expected by the scripts:
 ```python
 import pandas as pd
-fake = pd.read_csv('Fake.csv'); fake['label'] = 'fake'
-real = pd.read_csv('True.csv'); real['label'] = 'real'
-df = pd.concat([fake, real]).sample(frac=1).reset_index(drop=True)
+
+df = pd.read_csv('WELFake_Dataset.csv')
+df['label'] = df['label'].map({0: 'real', 1: 'fake'})
+df['text'] = (df['title'].fillna('') + ' ' + df['text'].fillna('')).str.strip()
 df[['text', 'label']].to_csv('data/news.csv', index=False)
 ```
 
