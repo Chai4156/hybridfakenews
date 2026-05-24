@@ -1,0 +1,379 @@
+import os
+import pandas as pd
+import numpy as np
+import logging
+import torch
+from sklearn.model_selection import train_test_split
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics import confusion_matrix, classification_report, accuracy_score
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import matplotlib.pyplot as plt
+import seaborn as sns
+from tqdm import tqdm
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+SAVED_MODEL_PATH = os.path.join(os.path.dirname(__file__), '..', 'roberta_fine_tuned')
+
+
+def load_roberta_model():
+    """Load fine-tuned RoBERTa model."""
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"Using device for RoBERTa: {device}")
+    
+    model_path = SAVED_MODEL_PATH if os.path.exists(SAVED_MODEL_PATH) else 'roberta-base'
+    logger.info(f"Loading RoBERTa from: {model_path}")
+    
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        model = AutoModelForSequenceClassification.from_pretrained(model_path, num_labels=2)
+        model.to(device)
+        model.eval()
+        return tokenizer, model, device
+    except Exception as e:
+        logger.warning(f"Could not load RoBERTa: {e}. Skipping RoBERTa model.")
+        return None, None, None
+
+
+import contextlib
+def get_roberta_predictions(texts, tokenizer, model, device, batch_size=64, max_samples=None):
+    """Get RoBERTa predictions - full dataset."""
+    if tokenizer is None or model is None:
+        return None
+    
+    if max_samples is not None:
+        texts_subset = texts[:max_samples]
+    else:
+        texts_subset = texts
+        
+    predictions = []
+    logger.info(f"Generating RoBERTa predictions for {len(texts_subset)} texts...")
+    
+    try:
+        for i in tqdm(range(0, len(texts_subset), batch_size), desc="RoBERTa"):
+            batch_texts = list(texts_subset[i:i+batch_size])
+            
+            encodings = tokenizer(
+                batch_texts,
+                add_special_tokens=True,
+                max_length=256,
+                return_token_type_ids=False,
+                padding=True,
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors='pt'
+            )
+            
+            input_ids = encodings['input_ids'].to(device)
+            attention_mask = encodings['attention_mask'].to(device)
+            
+            with torch.no_grad():
+                with torch.amp.autocast('cuda') if device.type == 'cuda' else contextlib.nullcontext():
+                    outputs = model(input_ids, attention_mask=attention_mask)
+                preds = torch.argmax(outputs.logits, dim=1).cpu().tolist()
+                predictions.extend(preds)
+        
+        if max_samples is not None:
+            full_predictions = np.zeros(len(texts), dtype=int)
+            full_predictions[:len(predictions)] = predictions
+            return full_predictions
+        return np.array(predictions)
+    except Exception as e:
+        logger.warning(f"RoBERTa inference failed: {e}. Skipping RoBERTa.")
+        return None
+
+
+def plot_confusion_matrix(cm, model_name, labels=['Fake', 'Real']):
+    """Plot and save confusion matrix."""
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                xticklabels=labels, yticklabels=labels, cbar=True)
+    plt.title(f'Confusion Matrix - {model_name}')
+    plt.ylabel('True Label')
+    plt.xlabel('Predicted Label')
+    plt.tight_layout()
+    
+    filename = f'confusion_matrix_{model_name.lower().replace(" ", "_")}.png'
+    plt.savefig(filename, dpi=300, bbox_inches='tight')
+    logger.info(f"Saved: {filename}")
+    plt.close()
+
+
+def generate_confusion_matrices_full(data_path='../WELFake_Dataset.csv'):
+    """Generate confusion matrices for multiple models."""
+    
+    # Ensure correct path
+    if not os.path.exists(data_path):
+        # Try alternate path
+        data_path = 'WELFake_Dataset.csv'
+    if not os.path.exists(data_path):
+        # Try one level up
+        data_path = os.path.join(os.path.dirname(__file__), '..', 'WELFake_Dataset.csv')
+    
+    # Load and prepare data
+    logger.info("Loading data...")
+    df = pd.read_csv(data_path)
+    df = df.dropna(subset=['text', 'label'])
+    
+    # Map labels
+    label_map = {'fake': 0, 'FAKE': 0, '0': 0, 'real': 1, 'REAL': 1, '1': 1}
+    df['label'] = df['label'].astype(str).map(label_map)
+    df = df.dropna(subset=['label'])
+    df['label'] = df['label'].astype(int)
+    
+    logger.info(f"Total samples: {len(df)}")
+    
+    # Split data: 70% train, 30% test
+    train_df, test_df = train_test_split(
+        df, test_size=0.30, random_state=42, stratify=df['label']
+    )
+    
+    # Use FULL test set (no sampling)
+    logger.info(f"Using FULL test set: {len(test_df)} samples")
+    
+    train_texts = train_df['text'].values
+    train_labels = train_df['label'].values
+    test_texts = test_df['text'].values
+    test_labels = test_df['label'].values
+    
+    logger.info(f"Train set: {len(train_df)} | Test set: {len(test_df)}")
+    
+    # ===== Feature Extraction =====
+    logger.info("\nExtracting TF-IDF features...")
+    tfidf_vectorizer = TfidfVectorizer(max_features=2000, ngram_range=(1, 2), min_df=2)
+    train_features = tfidf_vectorizer.fit_transform(train_texts)
+    test_features = tfidf_vectorizer.transform(test_texts)
+    
+    logger.info(f"Feature shape: {train_features.shape}")
+    
+    # ===== Load RoBERTa =====
+    logger.info("\nLoading RoBERTa model...")
+    roberta_tokenizer, roberta_model, roberta_device = load_roberta_model()
+    
+    # ===== Train Models =====
+    models = {}
+    
+    logger.info("\n" + "="*50)
+    logger.info("TRAINING MODELS")
+    logger.info("="*50)
+    
+    # 1. Naive Bayes Model
+    logger.info("\n1. Training Naive Bayes...")
+    nb_model = MultinomialNB()
+    nb_model.fit(train_features, train_labels)
+    models['Naive Bayes'] = nb_model
+    logger.info("✓ Naive Bayes trained")
+    
+    # 2. Logistic Regression (simulates RoBERTa's transformer approach)
+    logger.info("\n2. Training Logistic Regression...")
+    lr_model = LogisticRegression(max_iter=1000, random_state=42)
+    lr_model.fit(train_features, train_labels)
+    models['Logistic Regression'] = lr_model
+    logger.info("✓ Logistic Regression trained")
+    
+    # 3. Random Forest (ensemble approach)
+    logger.info("\n3. Training Random Forest...")
+    rf_model = RandomForestClassifier(n_estimators=50, random_state=42, n_jobs=-1, max_depth=20)
+    rf_model.fit(train_features, train_labels)
+    models['Random Forest'] = rf_model
+    logger.info("✓ Random Forest trained")
+    
+    # ===== Generate Predictions =====
+    logger.info("\n" + "="*50)
+    logger.info("GENERATING PREDICTIONS")
+    logger.info("="*50)
+    
+    predictions = {}
+    
+    # Get RoBERTa predictions (if available)
+    if roberta_model is not None:
+        logger.info("\nPredicting with RoBERTa...")
+        
+        # Check if we have predictions downloaded from Colab (.npy file)
+        colab_preds_path = 'roberta_preds_full.npy'
+        if not os.path.exists(colab_preds_path):
+            colab_preds_path = '../roberta_preds_full.npy'
+            
+        if os.path.exists(colab_preds_path):
+            logger.info("Found pre-computed RoBERTa predictions from Colab. Loading them...")
+            roberta_preds = np.load(colab_preds_path)
+            # Ensure length matches
+            if len(roberta_preds) != len(test_labels):
+                logger.warning(f"Length mismatch! Preds: {len(roberta_preds)}, Labels: {len(test_labels)}. Running local inference...")
+                roberta_preds = get_roberta_predictions(test_texts, roberta_tokenizer, roberta_model, roberta_device)
+        else:
+            logger.info("No pre-computed predictions found. Running RoBERTa inference locally (this may take a while)...")
+            roberta_preds = get_roberta_predictions(test_texts, roberta_tokenizer, roberta_model, roberta_device)
+            
+        if roberta_preds is not None:
+            predictions['RoBERTa'] = roberta_preds
+            accuracy = accuracy_score(test_labels, roberta_preds)
+            logger.info(f"✓ RoBERTa Accuracy: {accuracy:.4f}")
+    
+    # Get predictions from other models
+    for model_name, model in models.items():
+        logger.info(f"\nPredicting with {model_name}...")
+        preds = model.predict(test_features)
+        predictions[model_name] = preds
+        accuracy = accuracy_score(test_labels, preds)
+        logger.info(f"✓ {model_name} Accuracy: {accuracy:.4f}")
+    
+    # ===== Hybrid Model (Ensemble Voting) =====
+    logger.info("\nCreating Hybrid Model (Ensemble Voting)...")
+    all_preds = []
+    
+    if 'RoBERTa' in predictions:
+        # Give RoBERTa 2 votes! It's much smarter than the others, 
+        # so this anchors the ensemble and prevents ties.
+        all_preds.extend([predictions['RoBERTa'], predictions['RoBERTa']])
+    
+    all_preds.extend([
+        predictions['Naive Bayes'],
+        predictions['Logistic Regression'],
+        predictions['Random Forest']
+    ])
+    
+    # Majority voting: Using >= 0.5 drops the np.round() logic
+    # which previously resolved all 50/50 ties to 0 (Fake)!
+    hybrid_preds = (np.mean(all_preds, axis=0) >= 0.5).astype(int)
+    predictions['Hybrid'] = hybrid_preds
+    accuracy = accuracy_score(test_labels, hybrid_preds)
+    logger.info(f"✓ Hybrid Model Accuracy: {accuracy:.4f}")
+    
+    # ===== Generate Confusion Matrices =====
+    logger.info("\n" + "="*50)
+    logger.info("CONFUSION MATRICES & CLASSIFICATION REPORTS")
+    logger.info("="*50)
+    
+    results = {}
+    
+    for model_name, preds in predictions.items():
+        logger.info(f"\n{'='*50}")
+        logger.info(f"{model_name.upper()}")
+        logger.info(f"{'='*50}")
+        
+        cm = confusion_matrix(test_labels, preds)
+        logger.info(f"\nConfusion Matrix:\n{cm}")
+        
+        report = classification_report(test_labels, preds, 
+                                       target_names=['Fake', 'Real'])
+        logger.info(f"\nClassification Report:\n{report}")
+        
+        # Plot confusion matrix
+        plot_confusion_matrix(cm, model_name)
+        
+        results[model_name] = {
+            'confusion_matrix': cm,
+            'predictions': preds
+        }
+    
+    # ===== Save Detailed Results =====
+    logger.info("\n" + "="*50)
+    logger.info("SAVING DETAILED RESULTS")
+    logger.info("="*50)
+    
+    results_dict = {'True_Label': test_labels}
+    correctness_cols = {}
+    
+    if 'RoBERTa' in predictions:
+        results_dict['RoBERTa_Pred'] = predictions['RoBERTa']
+        correctness_cols['RoBERTa_Correct'] = test_labels == predictions['RoBERTa']
+    
+    results_dict['NaiveBayes_Pred'] = predictions['Naive Bayes']
+    results_dict['LogisticRegression_Pred'] = predictions['Logistic Regression']
+    results_dict['RandomForest_Pred'] = predictions['Random Forest']
+    results_dict['Hybrid_Pred'] = predictions['Hybrid']
+    
+    correctness_cols['NaiveBayes_Correct'] = test_labels == predictions['Naive Bayes']
+    correctness_cols['LogisticRegression_Correct'] = test_labels == predictions['Logistic Regression']
+    correctness_cols['RandomForest_Correct'] = test_labels == predictions['Random Forest']
+    correctness_cols['Hybrid_Correct'] = test_labels == predictions['Hybrid']
+    
+    results_df = pd.DataFrame(results_dict)
+    for col, values in correctness_cols.items():
+        results_df[col] = values
+    
+    results_df.to_csv('model_predictions_comparison.csv', index=False)
+    logger.info("Saved: model_predictions_comparison.csv")
+    
+    # ===== Summary Statistics =====
+    logger.info("\n" + "="*50)
+    logger.info("SUMMARY STATISTICS")
+    logger.info("="*50)
+    
+    summary_data = []
+    
+    if 'RoBERTa' in predictions:
+        summary_data.append({
+            'Model': 'RoBERTa',
+            'Correct_Predictions': np.sum(correctness_cols['RoBERTa_Correct']),
+            'Accuracy': accuracy_score(test_labels, predictions['RoBERTa'])
+        })
+    
+    summary_data.extend([
+        {
+            'Model': 'Naive Bayes',
+            'Correct_Predictions': np.sum(correctness_cols['NaiveBayes_Correct']),
+            'Accuracy': accuracy_score(test_labels, predictions['Naive Bayes'])
+        },
+        {
+            'Model': 'Logistic Regression',
+            'Correct_Predictions': np.sum(correctness_cols['LogisticRegression_Correct']),
+            'Accuracy': accuracy_score(test_labels, predictions['Logistic Regression'])
+        },
+        {
+            'Model': 'Random Forest',
+            'Correct_Predictions': np.sum(correctness_cols['RandomForest_Correct']),
+            'Accuracy': accuracy_score(test_labels, predictions['Random Forest'])
+        },
+        {
+            'Model': 'Hybrid',
+            'Correct_Predictions': np.sum(correctness_cols['Hybrid_Correct']),
+            'Accuracy': accuracy_score(test_labels, predictions['Hybrid'])
+        }
+    ])
+    
+    summary = pd.DataFrame(summary_data)
+    logger.info(f"\n{summary.to_string(index=False)}")
+    summary.to_csv('model_summary_statistics.csv', index=False)
+    logger.info("Saved: model_summary_statistics.csv")
+    
+    # ===== Model Comparison Visualization =====
+    logger.info("\nGenerating model comparison visualization...")
+    fig, ax = plt.subplots(figsize=(10, 6))
+    summary.plot(x='Model', y='Accuracy', kind='bar', ax=ax, legend=False, color='steelblue')
+    ax.set_ylabel('Accuracy')
+    ax.set_xlabel('Model')
+    ax.set_title('Model Accuracy Comparison')
+    ax.set_ylim([0, 1])
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    plt.savefig('model_comparison.png', dpi=300, bbox_inches='tight')
+    logger.info("Saved: model_comparison.png")
+    plt.close()
+    
+    logger.info("\n" + "="*50)
+    logger.info("COMPLETE!")
+    logger.info("Generated confusion matrices:")
+    if 'RoBERTa' in predictions:
+        logger.info("  - confusion_matrix_roberta.png")
+    logger.info("  - confusion_matrix_naive_bayes.png")
+    logger.info("  - confusion_matrix_logistic_regression.png")
+    logger.info("  - confusion_matrix_random_forest.png")
+    logger.info("  - confusion_matrix_hybrid.png")
+    logger.info("\nGenerated reports:")
+    logger.info("  - model_comparison.png")
+    logger.info("  - model_predictions_comparison.csv")
+    logger.info("  - model_summary_statistics.csv")
+    logger.info("="*50)
+
+
+if __name__ == '__main__':
+    generate_confusion_matrices_full()
