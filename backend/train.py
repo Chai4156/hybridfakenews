@@ -108,7 +108,7 @@ def train(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_path',   default='data/news.csv')
+    parser.add_argument('--data_path',   default='data/WELFAKE_dataset.csv')
     parser.add_argument('--base_model',  default='roberta-base')
     parser.add_argument('--epochs',      type=int,   default=3)
     parser.add_argument('--batch_size',  type=int,   default=8)
